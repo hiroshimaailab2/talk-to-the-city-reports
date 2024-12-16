@@ -2,16 +2,71 @@
 import json
 from tqdm import tqdm
 import pandas as pd
-from langchain.chat_models import ChatOpenAI
+from langchain_openai import AzureChatOpenAI  # AOAI対応
 from utils import messages
 from langchain.schema import AIMessage
-import pandas as pd
-import json
-from tqdm import tqdm
+import os
 
+JAPANESE_UI_MAP = {
+    "Argument": "議論",
+    "Original comment": "元のコメント",
+    "Representative arguments": "代表的な議論",
+    "Open full-screen map": "全画面地図を開く",
+    "Back to report": "レポートに戻る",
+    "Hide labels": "ラベルを非表示にする",
+    "Show labels": "ラベルを表示",
+    "Show filters": "フィルターを表示",
+    "Hide filters": "フィルターを非表示",
+    "Min. votes": "最小投票数",
+    "Consensus": "コンセンサス",
+    "Showing": "表示中",
+    "arguments": "議論",
+    "Reset zoom": "ズームをリセット",
+    "Click anywhere on the map to close this": "このメッセージを閉じるには地図のどこかをクリックしてください",
+    "Click on the dot for details": "詳細を見るには点をクリックしてください",
+    "agree": "同意する",
+    "disagree": "同意しない",
+    "Language": "言語",
+    "English": "英語",
+    "of total": "合計",
+    "Overview": "分析結果の概要",
+    "Cluster analysis": "クラスター分析",
+    "Representative comments": "コメント例",
+    "Introduction": "導入",
+    "Clusters": "クラスター",
+    "Appendix": "付録",
+    "This report was generated using an AI pipeline that consists of the following steps":
+        "このレポートは、以下のステップで構成されるAIパイプラインを使用して生成されました",
+    "Step": "ステップ",
+    "extraction": "抽出",
+    "show code": "コードを表示",
+    "hide code": "コードを非表示",
+    "show prompt": "プロンプトを表示",
+    "hide prompt": "プロンプトを非表示",
+    "embedding": "埋め込み",
+    "clustering": "クラスタリング",
+    "labelling": "ラベリング",
+    "takeaways": "まとめ",
+    "overview": "概要",
+}
+
+def request_to_chat_aoai(messages, model="gpt-4o"):
+    """AOAI経由でチャットリクエストを送信."""
+    endpoint = os.getenv("AZURE_OPENAI_API_BASE")
+    api_key = os.getenv("AZURE_OPENAI_API_KEY")
+    api_version = os.getenv("AZURE_OPENAI_API_VERSION")
+
+    client = AzureChatOpenAI(
+        model_name=model,
+        azure_endpoint=endpoint,
+        openai_api_key=api_key,
+        openai_api_version=api_version,
+        temperature=0.0
+    )
+    response = client(messages)
+    return response.content.strip()
 
 def translation(config):
-
     dataset = config['output_dir']
     path = f"outputs/{dataset}/translations.json"
     results = {}
@@ -19,7 +74,6 @@ def translation(config):
     languages = list(config.get('translation', {}).get('languages', []))
     if len(languages) == 0:
         print("No languages specified. Skipping translation step.")
-        # creating an empty file any, to reduce special casing later
         with open(path, 'w') as file:
             json.dump(results, file, indent=2)
         return
@@ -41,10 +95,8 @@ def translation(config):
                "Step", "extraction", "show code", "hide code", "show prompt", "hide prompt", "embedding",
                "clustering", "labelling", "takeaways", "overview"]
 
-    arg_list = arguments['argument'].to_list() + \
-        labels['label'].to_list() + \
-        UI_copy + \
-        languages
+    japanese_ui = [JAPANESE_UI_MAP[key] for key in UI_copy]
+    arg_list = arguments['argument'].to_list() + labels['label'].to_list() + japanese_ui + languages
 
     if 'name' in config:
         arg_list.append(config['name'])
@@ -56,22 +108,15 @@ def translation(config):
         prompt = f.read()
     model = config['model']
 
-    config['translation_prompt'] = prompt
-
-    translations = [translate_lang(
-        arg_list, 10, prompt, lang, model) for lang in languages]
-
-    # handling long takeaways differently, WITHOUT batching too much
+    translations = [translate_lang(arg_list, 10, prompt, lang, model) for lang in languages]
     long_arg_list = takeaways['takeaways'].to_list()
     long_arg_list.append(overview)
     if 'intro' in config:
         long_arg_list.append(config['intro'])
 
-    long_translations = [translate_lang(
-        long_arg_list, 1, prompt, lang, model) for lang in languages]
+    long_translations = [translate_lang(long_arg_list, 1, prompt, lang, model) for lang in languages]
 
     for i, id in enumerate(arg_list):
-        print('i, id', i, id)
         results[str(id)] = list([t[i] for t in translations])
     for i, id in enumerate(long_arg_list):
         results[str(id)] = list([t[i] for t in long_translations])
@@ -83,7 +128,6 @@ def translation(config):
 def translate_lang(arg_list, batch_size, prompt, lang, model):
     translations = []
     lang_prompt = prompt.replace("{language}", lang)
-    print(f"Translating to {lang}...")
     for i in tqdm(range(0, len(arg_list), batch_size)):
         batch = arg_list[i: i + batch_size]
         translations.extend(translate_batch(batch, lang_prompt, model))
@@ -91,9 +135,8 @@ def translate_lang(arg_list, batch_size, prompt, lang, model):
 
 
 def translate_batch(batch, lang_prompt, model, retries=3):
-    llm = ChatOpenAI(model_name=model, temperature=0.0)
-    input = json.dumps(list(batch))
-    response = llm(messages=messages(lang_prompt, input)).content.strip()
+    input_text = json.dumps(list(batch))
+    response = request_to_chat_aoai(messages=messages(lang_prompt, input_text), model=model)
     if "```" in response:
         response = response.split("```")[1]
     if response.startswith("json"):
@@ -102,28 +145,17 @@ def translate_batch(batch, lang_prompt, model, retries=3):
         parsed = [a.strip() for a in json.loads(response)]
         if len(parsed) != len(batch):
             print("Warning: batch size mismatch!")
-            print("Batch len:", len(batch))
-            print("Response len:", len(parsed))
-            for i, item in enumerate(batch):
-                print(f"Batch item {i}:", item)
-                if (i < len(parsed)):
-                    print("Response:", parsed[i])
-            if (len(batch) > 1):
-                print("Retrying with smaller batches...")
-                mid = len(batch) // 2
+            mid = len(batch) // 2
+            if len(batch) > 1:
                 return translate_batch(batch[:mid], lang_prompt, model, retries - 1) + \
-                    translate_batch(
-                        batch[mid:], lang_prompt, model, retries - 1)
+                       translate_batch(batch[mid:], lang_prompt, model, retries - 1)
             else:
-                print("Retrying batch...")
                 return translate_batch(batch, lang_prompt, model, retries - 1)
         else:
             return parsed
     except json.decoder.JSONDecodeError as e:
         print("JSON error:", e)
-        print("Response was:", response)
         if retries > 0:
-            print("Retrying batch...")
             return translate_batch(batch, lang_prompt, model, retries - 1)
         else:
             raise e
