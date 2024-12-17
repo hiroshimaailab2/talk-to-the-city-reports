@@ -3,6 +3,11 @@
 import pandas as pd
 import numpy as np
 from importlib import import_module
+from janome.tokenizer import Tokenizer
+
+
+STOP_WORDS = ['の', 'に', 'は', 'を', 'た', 'が', 'で', 'て', 'と', 'し', 'れ', 'さ', 'ある', 'いる', 'も', 'する', 'から', 'な', 'こと', 'として', 'いく', 'ない']
+TOKENIZER = Tokenizer()
 
 
 def clustering(config):
@@ -22,9 +27,14 @@ def clustering(config):
             "arg-id": arguments_df["arg-id"].values,
             "comment-id": arguments_df["comment-id"].values,
         },
+        min_cluster_size=clusters,
         n_topics=clusters,
     )
     result.to_csv(path, index=False)
+
+
+def tokenize_japanese(text):
+    return [token.surface for token in TOKENIZER.tokenize(text) if token.surface not in STOP_WORDS]
 
 
 def cluster_embeddings(
@@ -38,7 +48,6 @@ def cluster_embeddings(
     # (!) we import the following modules dynamically for a reason
     # (they are slow to load and not required for all pipelines)
     SpectralClustering = import_module('sklearn.cluster').SpectralClustering
-    stopwords = import_module('nltk.corpus').stopwords
     HDBSCAN = import_module('hdbscan').HDBSCAN
     UMAP = import_module('umap').UMAP
     CountVectorizer = import_module(
@@ -51,8 +60,7 @@ def cluster_embeddings(
     )
     hdbscan_model = HDBSCAN(min_cluster_size=min_cluster_size)
 
-    stop = stopwords.words("english")
-    vectorizer_model = CountVectorizer(stop_words=stop)
+    vectorizer_model = CountVectorizer(tokenizer=tokenize_japanese)
     topic_model = BERTopic(
         umap_model=umap_model,
         hdbscan_model=hdbscan_model,
@@ -85,6 +93,6 @@ def cluster_embeddings(
 
     result.columns = [c.lower() for c in result.columns]
     result = result[['arg-id', 'x', 'y', 'probability']]
-    result['cluster-id'] = cluster_labels
+    result['cluster-id'] = cluster_labels       
 
     return result
