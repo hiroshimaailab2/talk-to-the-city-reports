@@ -25,13 +25,13 @@ jobs:
           python-version: '3.11'
       
       - name: Create and start virtual environment
-        working-directory: Scatter
+        working-directory: scatter
         run: |
           python -m venv venv
           source venv/bin/activate
       
       - name: Install dependencies
-        working-directory: Scatter
+        working-directory: scatter
         run: |
           source venv/bin/activate
           pip install -r requirements.txt
@@ -39,7 +39,7 @@ jobs:
       # Optional: Add step to run tests here (PyTest, Django test suites, etc.)
 
       - name: Zip artifact for deployment
-        working-directory: Scatter
+        working-directory: scatter
         run: |
           zip release.zip ./* -r
 
@@ -48,8 +48,8 @@ jobs:
         with:
           name: python-app
           path: |
-            Scatter/release.zip
-            !Scatter/venv/
+            scatter/release.zip
+            !scatter/venv/
 
   deploy:
     runs-on: ubuntu-latest
